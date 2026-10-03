@@ -28,3 +28,21 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Exam paper pages: all text pure black, and easy to select and copy */
+.exam-content,
+.exam-content * {
+  color: #000 !important;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Loading cover: blocks taps immediately, becomes visible after a short delay */
+@keyframes loader-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.loader-overlay {
+  background: rgba(255, 255, 255, 0.9);
+  animation: loader-appear 0.2s ease-out 0.4s both;
+}

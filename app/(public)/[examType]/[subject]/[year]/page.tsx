@@ -41,6 +41,18 @@ type SharedPromptDoc = {
 
 const isEnglish = (subject: string) => subject.toLowerCase().includes("english");
 
+// Puts the question number inside the question's own first paragraph, so it
+// copies and pastes (for example into Word) as one natural line.
+function withLabel(html: string | undefined, label: string) {
+  const text = html ?? "";
+  const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const labelHtml = `<strong>${safeLabel}</strong> `;
+  if (/^\s*<p[^>]*>/i.test(text)) {
+    return text.replace(/^\s*<p([^>]*)>/i, (_match, attrs) => `<p${attrs}>${labelHtml}`);
+  }
+  return `<p>${labelHtml}${text}</p>`;
+}
+
 const OBJECTIVE_ORDER = ["Grammar", "Oral"];
 const THEORY_ORDER = ["Comprehension", "Summary", "Essay"];
 
@@ -136,7 +148,7 @@ export default async function ExamPaperPage({
   }
 
   return (
-    <main className="max-w-3xl mx-auto px-4 py-10">
+    <main className="exam-content max-w-3xl mx-auto px-4 py-10">
                         <h1 className="text-2xl font-bold text-navy mb-8 text-center">
         {displayExamType} {subject} {year}
       </h1>
@@ -215,18 +227,65 @@ export default async function ExamPaperPage({
         </section>
       )}
 
+      {objectivePaper && objectiveQuestions.length > 0 && (
+        <section className="mt-12 rounded-md bg-gray-50 p-4">
+          <h2 className="mb-3 text-xl font-semibold text-navy">Objective Answers</h2>
+          {english ? (
+            groupByComponent(objectiveQuestions, objectiveOrder).map((group) => (
+              <div key={group.component} className="mb-4">
+                <p className="mb-1 text-sm font-medium text-gray-800">
+                  {answerGroupLabel(group.component, examTypeUpper)}
+                </p>
+                <AnswerKey items={group.items} />
+              </div>
+            ))
+          ) : (
+            <AnswerKey items={objectiveQuestions} />
+          )}
+        </section>
+      )}
+
       <AdSlot slotKey="exam-paper" />
     </main>
+  );
+}
+
+function answerGroupLabel(component: string, examTypeUpper: string): string {
+  if (examTypeUpper === "WAEC") {
+    if (component === "Grammar") return "Paper 1 — Objective";
+    if (component === "Oral") return "Paper 3 — Oral English";
+  }
+  if (examTypeUpper === "JAMB") {
+    if (component === "Comprehension and Summary") return "Section A — Comprehension and Summary";
+    if (component === "Lexis and Structure") return "Section B — Lexis and Structure";
+    if (component === "Oral Forms") return "Section C — Oral Forms";
+  }
+  return component;
+}
+
+function AnswerKey({ items }: { items: QuestionDoc[] }) {
+  return (
+    <p className="text-sm leading-7">
+      {items.map((q) => (
+        <span key={q._id}>
+          <span className="mr-5 inline-block whitespace-nowrap">
+            <span className="font-medium">{q.questionNumber}.</span> {q.correctAnswer || "—"}
+          </span>{" "}
+        </span>
+      ))}
+    </p>
   );
 }
 
 function ObjectiveQuestion({ question }: { question: QuestionDoc }) {
   return (
     <div className="mb-6 border-b border-gray-100 pb-4">
-      <div className="mb-2 flex gap-2 text-gray-800">
-        <span className="font-medium">{question.questionNumber}.</span>
-        <div dangerouslySetInnerHTML={{ __html: question.questionText }} />
-      </div>
+            <div
+        className="mb-2 text-gray-800"
+        dangerouslySetInnerHTML={{
+          __html: withLabel(question.questionText, `${question.questionNumber}.`),
+        }}
+      />
       {question.imageUrl && (
         <img src={question.imageUrl} alt="" className="mb-2 max-w-full rounded-md" />
       )}
@@ -234,16 +293,8 @@ function ObjectiveQuestion({ question }: { question: QuestionDoc }) {
         {(["A", "B", "C", "D"] as const).map(
           (letter) =>
             question.options?.[letter] && (
-              <p
-                key={letter}
-                className={
-                  question.correctAnswer === letter
-                    ? "font-semibold text-navy"
-                    : "text-gray-700"
-                }
-              >
+              <p key={letter} className="text-gray-700">
                 {letter}. {question.options[letter]}
-                {question.correctAnswer === letter && " ✓"}
               </p>
             )
         )}
@@ -254,13 +305,15 @@ function ObjectiveQuestion({ question }: { question: QuestionDoc }) {
 
 function TheoryQuestion({ question }: { question: QuestionDoc }) {
   return (
-    <div className="mb-4 flex gap-2 text-gray-800">
-      <span className="font-medium">
-        {question.questionNumber}
-        {question.subPart}.
-      </span>
-      <div dangerouslySetInnerHTML={{ __html: question.questionText }} />
-    </div>
+    <div
+      className="mb-4 text-gray-800"
+      dangerouslySetInnerHTML={{
+        __html: withLabel(
+          question.questionText,
+          `${question.questionNumber ?? ""}${question.subPart}.`
+        ),
+      }}
+    />
   );
 }
 

@@ -4,6 +4,7 @@ import Question from "@/models/Question";
 import Passage from "@/models/Passage";
 import SharedPrompt from "@/models/SharedPrompt";
 import AdSlot from "@/components/AdSlot";
+import CleanCopy from "@/components/CleanCopy";
 
 async function connectDB() {
   if (mongoose.connection.readyState === 0) {
@@ -39,7 +40,18 @@ type SharedPromptDoc = {
   imageUrl: string;
 };
 
+type Group = { component: string; items: QuestionDoc[] };
+
 const isEnglish = (subject: string) => subject.toLowerCase().includes("english");
+
+// English Comprehension/Summary questions saved without a passage number belong
+// to Passage 1 (the same rule the admin Live Preview uses).
+const PASSAGE_COMPONENTS = ["Comprehension", "Summary"];
+function effectivePassageNumber(q: QuestionDoc) {
+  if (q.passageNumber) return q.passageNumber;
+  if (PASSAGE_COMPONENTS.includes(q.component)) return 1;
+  return undefined;
+}
 
 // Puts the question number inside the question's own first paragraph, so it
 // copies and pastes (for example into Word) as one natural line.
@@ -54,7 +66,8 @@ function withLabel(html: string | undefined, label: string) {
 }
 
 const OBJECTIVE_ORDER = ["Grammar", "Oral"];
-const THEORY_ORDER = ["Comprehension", "Summary", "Essay"];
+// Standard WAEC English Paper 2 order: Section A Essay, B Comprehension, C Summary
+const THEORY_ORDER = ["Essay", "Comprehension", "Summary"];
 
 function groupByComponent<T extends { component: string }>(items: T[], order: string[]) {
   const groups: { component: string; items: T[] }[] = [];
@@ -79,11 +92,11 @@ export default async function ExamPaperPage({
 }: {
   params: Promise<{ examType: string; subject: string; year: string }>;
 }) {
-    const { examType, subject: rawSubject, year } = await params;
+  const { examType, subject: rawSubject, year } = await params;
   const subject = decodeURIComponent(rawSubject);
   await connectDB();
 
-    const examTypeUpper = examType.toUpperCase();
+  const examTypeUpper = examType.toUpperCase();
   const displayExamType = examTypeUpper === "JAMB" ? "UTME" : examTypeUpper;
   const yearNumber = Number(year);
 
@@ -96,7 +109,7 @@ export default async function ExamPaperPage({
     );
   }
 
-    const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedSubject = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const papers = await Paper.find({
     examType: examTypeUpper,
     subject: { $regex: `^${escapedSubject}$`, $options: "i" },
@@ -110,92 +123,103 @@ export default async function ExamPaperPage({
     return (
       <main className="max-w-3xl mx-auto px-4 py-20 text-center">
         <h1 className="text-2xl font-bold text-navy mb-4">Not Found</h1>
-                <p className="text-gray-700">
+        <p className="text-gray-700">
           We don&apos;t have {subject} {year} ({displayExamType}) yet.
         </p>
       </main>
     );
   }
 
-    const english = isEnglish(subject);
+  // The four lookups below are independent, so they run together (faster).
+  const [objectiveQuestions, sharedPrompts, theoryQuestions, passages] = await Promise.all([
+    (objectivePaper
+      ? Question.find({ paper: objectivePaper._id }).sort({ questionNumber: 1 }).lean()
+      : Promise.resolve([])) as unknown as Promise<QuestionDoc[]>,
+    (objectivePaper
+      ? SharedPrompt.find({ paper: objectivePaper._id }).sort({ fromQuestion: 1 }).lean()
+      : Promise.resolve([])) as unknown as Promise<SharedPromptDoc[]>,
+    (theoryPaper
+      ? Question.find({ paper: theoryPaper._id }).sort({ questionNumber: 1, subPart: 1 }).lean()
+      : Promise.resolve([])) as unknown as Promise<QuestionDoc[]>,
+    (theoryPaper
+      ? Passage.find({ paper: theoryPaper._id }).lean()
+      : Promise.resolve([])) as unknown as Promise<PassageDoc[]>,
+  ]);
+
+  const english = isEnglish(subject);
   const isJambEnglish = examTypeUpper === "JAMB" && english;
+  const isWaecEnglish = examTypeUpper === "WAEC" && english;
   const objectiveOrder = isJambEnglish
     ? ["Comprehension and Summary", "Lexis and Structure", "Oral Forms"]
     : OBJECTIVE_ORDER;
   const hiddenHeadingComponent = isJambEnglish ? null : "Grammar";
-      const promptComponents = isJambEnglish
+  const promptComponents = isJambEnglish
     ? ["Comprehension and Summary", "Lexis and Structure", "Oral Forms"]
     : ["Grammar", "Oral"];
 
-    let objectiveQuestions: QuestionDoc[] = [];
-  let sharedPrompts: SharedPromptDoc[] = [];
-  if (objectivePaper) {
-    objectiveQuestions = (await Question.find({ paper: objectivePaper._id })
-      .sort({ questionNumber: 1 })
-      .lean()) as unknown as QuestionDoc[];
-    sharedPrompts = (await SharedPrompt.find({ paper: objectivePaper._id })
-      .sort({ fromQuestion: 1 })
-      .lean()) as unknown as SharedPromptDoc[];
-  }
+  const objectiveGroups: Group[] = english
+    ? groupByComponent(objectiveQuestions, objectiveOrder)
+    : [];
+  // WAEC English: Oral is its own paper (Paper 3), so it goes last on the page.
+  const oralGroups = isWaecEnglish ? objectiveGroups.filter((g) => g.component === "Oral") : [];
+  const mainObjectiveGroups = isWaecEnglish
+    ? objectiveGroups.filter((g) => g.component !== "Oral")
+    : objectiveGroups;
 
-  let theoryQuestions: QuestionDoc[] = [];
-  let passages: PassageDoc[] = [];
-  if (theoryPaper) {
-    theoryQuestions = (await Question.find({ paper: theoryPaper._id })
-      .sort({ questionNumber: 1, subPart: 1 })
-      .lean()) as unknown as QuestionDoc[];
-    passages = (await Passage.find({ paper: theoryPaper._id }).lean()) as unknown as PassageDoc[];
-  }
+  const renderObjectiveGroup = (group: Group, showHeading: boolean) => (
+    <div key={group.component} className="mb-8">
+      {showHeading && (
+        <h3 className="text-lg font-medium text-gray-800 mb-3">{group.component}</h3>
+      )}
+      {group.items.map((q) => {
+        const prompt = promptComponents.includes(group.component)
+          ? sharedPrompts.find(
+              (sp) => sp.component === group.component && sp.fromQuestion === q.questionNumber
+            )
+          : undefined;
+        return (
+          <div key={q._id}>
+            {prompt && <SharedPromptBlock prompt={prompt} />}
+            <ObjectiveQuestion question={q} />
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <main className="exam-content max-w-3xl mx-auto px-4 py-10">
-                        <h1 className="text-2xl font-bold text-navy mb-8 text-center">
+      <CleanCopy />
+      <h1 className="text-2xl font-bold text-navy mb-8 text-center">
         {displayExamType} {subject} {year}
       </h1>
 
-      {objectivePaper && (
+      {objectivePaper && (!english || mainObjectiveGroups.length > 0) && (
         <section className="mb-12">
           <h2 className="text-xl font-semibold text-navy mb-4">Objective</h2>
-                    {english ? (
-                        groupByComponent(objectiveQuestions, objectiveOrder).map((group) => (
-              <div key={group.component} className="mb-8">
-                {group.component !== hiddenHeadingComponent && (
-                  <h3 className="text-lg font-medium text-gray-800 mb-3">{group.component}</h3>
-                )}
-                {group.items.map((q) => {
-                                                  const prompt = promptComponents.includes(group.component)
-                    ? sharedPrompts.find(
-                        (sp) => sp.component === group.component && sp.fromQuestion === q.questionNumber
-                      )
-                    : undefined;
-                  return (
-                    <div key={q._id}>
-                      {prompt && <SharedPromptBlock prompt={prompt} />}
-                      <ObjectiveQuestion question={q} />
-                    </div>
-                  );
-                })}
-              </div>
-            ))
-          ) : (
-            objectiveQuestions.map((q) => {
-              const prompt = sharedPrompts.find((sp) => sp.fromQuestion === q.questionNumber);
-              return (
-                <div key={q._id}>
-                  {prompt && <SharedPromptBlock prompt={prompt} />}
-                  <ObjectiveQuestion question={q} />
-                </div>
-              );
-            })
-          )}
+          {english
+            ? mainObjectiveGroups.map((group) =>
+                renderObjectiveGroup(group, group.component !== hiddenHeadingComponent)
+              )
+            : objectiveQuestions.map((q) => {
+                const prompt = sharedPrompts.find((sp) => sp.fromQuestion === q.questionNumber);
+                return (
+                  <div key={q._id}>
+                    {prompt && <SharedPromptBlock prompt={prompt} />}
+                    <ObjectiveQuestion question={q} />
+                  </div>
+                );
+              })}
         </section>
       )}
 
-            {theoryPaper && (
-        <section>
+      {theoryPaper && (
+        <section className="mb-12">
           <h2 className="text-xl font-semibold text-navy mb-4">Theory</h2>
           {groupByComponent(theoryQuestions, THEORY_ORDER).map((group) => {
-            const groupPassages = passages.filter((p) => p.component === group.component);
+            const groupPassages = passages.filter(
+              (p) => (p.component || "") === (group.component || "")
+            );
             let lastPassageNumber: number | undefined = undefined;
             return (
               <div key={group.component || "theory"} className="mb-8">
@@ -203,11 +227,12 @@ export default async function ExamPaperPage({
                   <h3 className="text-lg font-medium text-gray-800 mb-3">{group.component}</h3>
                 )}
                 {group.items.map((q) => {
+                  const passageNumber = effectivePassageNumber(q);
                   const isNewPassage =
-                    q.passageNumber !== undefined && q.passageNumber !== lastPassageNumber;
-                  if (isNewPassage) lastPassageNumber = q.passageNumber;
+                    passageNumber !== undefined && passageNumber !== lastPassageNumber;
+                  if (isNewPassage) lastPassageNumber = passageNumber;
                   const passageForThis = isNewPassage
-                    ? groupPassages.find((p) => p.passageNumber === q.passageNumber)
+                    ? groupPassages.find((p) => p.passageNumber === passageNumber)
                     : undefined;
                   return (
                     <div key={q._id}>
@@ -227,11 +252,18 @@ export default async function ExamPaperPage({
         </section>
       )}
 
+      {oralGroups.length > 0 && (
+        <section className="mb-12">
+          <h2 className="text-xl font-semibold text-navy mb-4">Oral English</h2>
+          {oralGroups.map((group) => renderObjectiveGroup(group, false))}
+        </section>
+      )}
+
       {objectivePaper && objectiveQuestions.length > 0 && (
-        <section className="mt-12 rounded-md bg-gray-50 p-4">
+        <section className="rounded-md bg-gray-50 p-4">
           <h2 className="mb-3 text-xl font-semibold text-navy">Objective Answers</h2>
           {english ? (
-            groupByComponent(objectiveQuestions, objectiveOrder).map((group) => (
+            objectiveGroups.map((group) => (
               <div key={group.component} className="mb-4">
                 <p className="mb-1 text-sm font-medium text-gray-800">
                   {answerGroupLabel(group.component, examTypeUpper)}
@@ -280,10 +312,10 @@ function AnswerKey({ items }: { items: QuestionDoc[] }) {
 function ObjectiveQuestion({ question }: { question: QuestionDoc }) {
   return (
     <div className="mb-6 border-b border-gray-100 pb-4">
-            <div
+      <div
         className="mb-2 text-gray-800"
         dangerouslySetInnerHTML={{
-          __html: withLabel(question.questionText, `${question.questionNumber}.`),
+          __html: withLabel(question.questionText, `${question.questionNumber ?? ""}.`),
         }}
       />
       {question.imageUrl && (
@@ -310,7 +342,7 @@ function TheoryQuestion({ question }: { question: QuestionDoc }) {
       dangerouslySetInnerHTML={{
         __html: withLabel(
           question.questionText,
-          `${question.questionNumber ?? ""}${question.subPart}.`
+          `${question.questionNumber ?? ""}${question.subPart ?? ""}.`
         ),
       }}
     />

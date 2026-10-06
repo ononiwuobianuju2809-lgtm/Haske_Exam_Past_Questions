@@ -53,6 +53,22 @@ function effectivePassageNumber(q: QuestionDoc) {
   return undefined;
 }
 
+// Orders theory questions. For English, a passage's questions stay together
+// (Passage 1 first, then Passage 2); for other subjects, true number order.
+function compareTheory(a: QuestionDoc, b: QuestionDoc, passageFirst: boolean) {
+  if (passageFirst) {
+    const pa = effectivePassageNumber(a) ?? 0;
+    const pb = effectivePassageNumber(b) ?? 0;
+    if (pa !== pb) return pa - pb;
+  }
+  const an = a.questionNumber ?? null;
+  const bn = b.questionNumber ?? null;
+  if (an !== null && bn !== null && an !== bn) return an - bn;
+  if (an !== null && bn === null) return -1;
+  if (an === null && bn !== null) return 1;
+  return (a.subPart || "").localeCompare(b.subPart || "", undefined, { numeric: true });
+}
+
 // Puts the question number inside the question's own first paragraph, so it
 // copies and pastes (for example into Word) as one natural line.
 function withLabel(html: string | undefined, label: string) {
@@ -157,6 +173,10 @@ export default async function ExamPaperPage({
     ? ["Comprehension and Summary", "Lexis and Structure", "Oral Forms"]
     : ["Grammar", "Oral"];
 
+  const sortedTheoryQuestions = [...theoryQuestions].sort((a, b) =>
+    compareTheory(a, b, english)
+  );
+
   const objectiveGroups: Group[] = english
     ? groupByComponent(objectiveQuestions, objectiveOrder)
     : [];
@@ -216,7 +236,7 @@ export default async function ExamPaperPage({
       {theoryPaper && (
         <section className="mb-12">
           <h2 className="text-xl font-semibold text-navy mb-4">Theory</h2>
-          {groupByComponent(theoryQuestions, THEORY_ORDER).map((group) => {
+          {groupByComponent(sortedTheoryQuestions, THEORY_ORDER).map((group) => {
             const groupPassages = passages.filter(
               (p) => (p.component || "") === (group.component || "")
             );
@@ -352,9 +372,6 @@ function TheoryQuestion({ question }: { question: QuestionDoc }) {
 function SharedPromptBlock({ prompt }: { prompt: SharedPromptDoc }) {
   return (
     <div className="mb-4 rounded-md bg-gray-50 p-4 text-gray-700">
-      <p className="mb-2 text-sm font-medium text-gray-500">
-        Use the passage below to answer questions {prompt.fromQuestion}–{prompt.toQuestion}
-      </p>
       <div dangerouslySetInnerHTML={{ __html: prompt.promptText }} />
       {prompt.imageUrl && (
         <img src={prompt.imageUrl} alt="" className="mt-2 max-w-full rounded-md" />
